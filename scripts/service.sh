@@ -9,7 +9,7 @@ NODE_BIN="$(command -v node || echo "/opt/homebrew/bin/node")"
 cmd="${1:-start}"
 
 case "$cmd" in
-  start|stop|restart|status|serve|install-service|uninstall-service)
+  start|stop|restart|status|serve|install-service|uninstall-service|help|--help|-h)
     exec "$NODE_BIN" "$BRIDGE_SCRIPT" "$cmd"
     ;;
   install-agent)

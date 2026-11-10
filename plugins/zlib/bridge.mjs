@@ -1190,7 +1190,37 @@ async function cliUninstallService() {
   await cliStop();
 }
 
-const subcommand = (process.argv[2] || "serve").trim().toLowerCase();
+function printHelp(useTty = false) {
+  const helpText = `
+dalibre-zlib-bridge - Local Z-Library CLI HTTP bridge for Dalibre
+
+Usage:
+  dalibre-zlib-bridge <command>
+
+Commands:
+  start              Start the bridge service in the background
+  stop               Stop the running background bridge service
+  restart            Restart the background bridge service
+  status             Show service status and detected proxy/domain settings
+  install-service    Register and start login auto-start service (LaunchAgent / systemd / Startup)
+  uninstall-service  Remove login auto-start service and stop the bridge
+  serve              Run the HTTP bridge server in the foreground
+  help, --help, -h   Show this help message
+`;
+  if (useTty) {
+    const ttyPath = process.platform === "win32" ? "CON" : "/dev/tty";
+    try {
+      const fd = fs.openSync(ttyPath, "w");
+      fs.writeSync(fd, helpText + "\n");
+      fs.closeSync(fd);
+      return;
+    } catch {}
+  }
+  console.log(helpText.trim());
+}
+
+const rawArg = (process.argv[2] || "").trim().toLowerCase();
+const subcommand = rawArg || (process.stdout.isTTY ? "help" : "serve");
 
 switch (subcommand) {
   case "serve":
@@ -1215,9 +1245,15 @@ switch (subcommand) {
   case "uninstall-service":
     await cliUninstallService();
     break;
+  case "postinstall":
+    printHelp(true);
+    break;
+  case "help":
+  case "--help":
+  case "-h":
+    printHelp(false);
+    break;
   default:
-    console.log(
-      "Usage: dalibre-zlib-bridge [serve|start|stop|restart|status|install-service|uninstall-service]"
-    );
+    printHelp(false);
     process.exit(1);
 }
