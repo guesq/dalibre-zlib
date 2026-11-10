@@ -23,7 +23,6 @@
     "README.zh-CN.md"
   ],
   "scripts": {
-    "postinstall": "node ./plugins/zlib/bridge.mjs postinstall",
     "start": "node ./plugins/zlib/bridge.mjs start",
     "stop": "node ./plugins/zlib/bridge.mjs stop",
     "restart": "node ./plugins/zlib/bridge.mjs restart",
