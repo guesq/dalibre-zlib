@@ -65,7 +65,7 @@ node plugins/zlib/bridge.mjs stop
 
 ```bash
 # Install globally from GitHub
-npm install -g github:guesq/dalibre_zlib
+npm install -g github:guesq/dalibre-zlib
 
 # Then run from anywhere on macOS, Linux, or Windows:
 dalibre-zlib-bridge start
@@ -119,7 +119,7 @@ What `install-service` sets up per OS:
 
 Open **Dalibre** → **Plugins**:
 
-- **Install from GitHub**: Click **Install from GitHub** and enter `guesq/dalibre_zlib` (or `https://github.com/guesq/dalibre_zlib`) to install from a GitHub Release or branch and track updates.
+- **Install from GitHub**: Click **Install from GitHub** and enter `guesq/dalibre-zlib` (or `https://github.com/guesq/dalibre-zlib`) to install from a GitHub Release or branch and track updates.
 - **Install from Local File / Folder**: Click **Add plugin** and select either:
   - The packaged release archive: [`dist/zlib.books-1.2.0.dalibre-plugin`](./dist/zlib.books-1.2.0.dalibre-plugin)
   - The plugin directory: [`plugins/zlib`](./plugins/zlib) (or the repository root)

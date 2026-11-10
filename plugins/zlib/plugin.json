@@ -7,7 +7,7 @@
   "icon": "book-open",
   "description": "Search, browse, and download books from Z-Library via local zlib CLI",
   "author": "guesq",
-  "homepage": "https://github.com/guesq/dalibre_zlib",
+  "homepage": "https://github.com/guesq/dalibre-zlib",
   "license": "MIT",
   "main": "main.js",
   "capabilities": {

@@ -5,10 +5,10 @@
   "type": "module",
   "license": "MIT",
   "author": "guesq",
-  "homepage": "https://github.com/guesq/dalibre_zlib",
+  "homepage": "https://github.com/guesq/dalibre-zlib",
   "repository": {
     "type": "git",
-    "url": "https://github.com/guesq/dalibre_zlib.git"
+    "url": "https://github.com/guesq/dalibre-zlib.git"
   },
   "bin": {
     "dalibre-zlib-bridge": "./plugins/zlib/bridge.mjs"

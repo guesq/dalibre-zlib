@@ -65,7 +65,7 @@ node plugins/zlib/bridge.mjs stop
 
 ```bash
 # 直接从 GitHub 全局安装
-npm install -g github:guesq/dalibre_zlib
+npm install -g github:guesq/dalibre-zlib
 
 # 安装后可在 macOS / Linux / Windows 任意终端直接调用：
 dalibre-zlib-bridge start
@@ -119,7 +119,7 @@ dalibre-zlib-bridge stop
 
 打开 **Dalibre** → **Plugins**（插件管理）：
 
-- **从 GitHub 安装**：点击 **Install from GitHub**，输入 `guesq/dalibre_zlib`（或 `https://github.com/guesq/dalibre_zlib`），支持从 GitHub Release 或分支直接安装并跟踪更新。
+- **从 GitHub 安装**：点击 **Install from GitHub**，输入 `guesq/dalibre-zlib`（或 `https://github.com/guesq/dalibre-zlib`），支持从 GitHub Release 或分支直接安装并跟踪更新。
 - **从本地文件/目录安装**：点击 **Add plugin**，选择以下任一路径：
   - 打包好的发行版文件：[`dist/zlib.books-1.2.0.dalibre-plugin`](./dist/zlib.books-1.2.0.dalibre-plugin)
   - 插件目录：[`plugins/zlib`](./plugins/zlib)（或仓库根目录）
