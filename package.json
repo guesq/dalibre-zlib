@@ -13,6 +13,15 @@
   "bin": {
     "dalibre-zlib-bridge": "./plugins/zlib/bridge.mjs"
   },
+  "files": [
+    "plugins/zlib/",
+    "bridge/",
+    "plugin.json",
+    "main.js",
+    "dalibre.d.ts",
+    "README.md",
+    "README.zh-CN.md"
+  ],
   "scripts": {
     "start": "node ./plugins/zlib/bridge.mjs start",
     "stop": "node ./plugins/zlib/bridge.mjs stop",

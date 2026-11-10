@@ -1,0 +1,6 @@
+.github/
+.DS_Store
+sdk/
+scripts/
+dist/
+*.log
