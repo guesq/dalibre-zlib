@@ -1,0 +1,96 @@
+{
+  "$schema": "../../sdk/plugin.schema.json",
+  "id": "zlib.books",
+  "name": "Z-Library",
+  "version": "1.2.0",
+  "api": 1,
+  "icon": "book-open",
+  "description": "Search, browse, and download books from Z-Library via local zlib CLI",
+  "author": "guesq",
+  "homepage": "https://github.com/guesq/dalibre_zlib",
+  "license": "MIT",
+  "main": "main.js",
+  "capabilities": {
+    "bookSource": {
+      "collections": true,
+      "filters": [
+        {
+          "key": "format",
+          "title": "Format",
+          "type": "select",
+          "default": "",
+          "options": [
+            { "value": "", "title": "Any format" },
+            { "value": "epub", "title": "EPUB" },
+            { "value": "pdf", "title": "PDF" },
+            { "value": "mobi", "title": "MOBI" },
+            { "value": "azw3", "title": "AZW3" },
+            { "value": "fb2", "title": "FB2" },
+            { "value": "djvu", "title": "DJVU" },
+            { "value": "txt", "title": "TXT" }
+          ]
+        },
+        {
+          "key": "language",
+          "title": "Language",
+          "type": "language",
+          "options": [
+            { "value": "", "title": "Any language" },
+            { "value": "zh" },
+            { "value": "en" },
+            { "value": "ja" },
+            { "value": "fr" },
+            { "value": "de" },
+            { "value": "es" },
+            { "value": "ru" },
+            { "value": "it" },
+            { "value": "pt" },
+            { "value": "ko" }
+          ]
+        },
+        {
+          "key": "sort",
+          "title": "Sort",
+          "type": "select",
+          "default": "popular",
+          "options": [
+            { "value": "popular", "title": "Most popular" },
+            { "value": "bestmatch", "title": "Best match" },
+            { "value": "date", "title": "Recently added" },
+            { "value": "year", "title": "Year (newest)" },
+            { "value": "titleA", "title": "Title (A-Z)" },
+            { "value": "filesize", "title": "File size (largest)" },
+            { "value": "filesizeA", "title": "File size (smallest)" }
+          ]
+        }
+      ]
+    }
+  },
+  "permissions": {
+    "hosts": ["localhost", "127.0.0.1"],
+    "localNetwork": true
+  },
+  "settings": [
+    {
+      "key": "domain",
+      "title": "Z-Library Domain",
+      "type": "text",
+      "default": "",
+      "description": "Optional Z-Library mirror domain (e.g. https://z-lib.gd). Leave empty to use zlib's configured domain."
+    },
+    {
+      "key": "proxy",
+      "title": "Proxy",
+      "type": "text",
+      "default": "system",
+      "description": "Proxy mode: 'system' (use OS system proxy, default), 'direct' (no proxy), 'zlib' (use ~/.config/zlib/.env), or an explicit URL like http://127.0.0.1:1082."
+    },
+    {
+      "key": "bridgeUrl",
+      "title": "Local zlib bridge URL",
+      "type": "text",
+      "default": "http://localhost:17890",
+      "description": "Address of the local zlib-bridge service (default: http://localhost:17890)."
+    }
+  ]
+}
