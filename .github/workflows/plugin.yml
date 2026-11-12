@@ -1,7 +1,6 @@
 # Checks the plugin on every push and pull request. Pushing a tag such as
-# v1.1.0 (plugin.json's version) packs it into a GitHub release, which
-# Dalibre installs and updates from: Plugins -> Install from GitHub, and
-# the Marketplace once listed.
+# v2.0.0 (plugin.json's version) packs it into a GitHub release, which
+# Dalibre installs and updates from: Plugins › Add plugin › From GitHub.
 name: Plugin
 on:
   push:
@@ -18,8 +17,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: npm install -g dalibre-plugin@^0.6.0
       - name: Check
-        run: node scripts/test-plugin.mjs
+        # Validates plugin.json and main.js, downloads every platform's zlib
+        # build and checks it against plugin.json.
+        run: dalibre-plugin check .
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -30,5 +32,6 @@ jobs:
             echo "::error::the tag is $GITHUB_REF_NAME but plugin.json's version is $version"
             exit 1
           fi
-          ./scripts/service.sh pack
+          mkdir -p dist
+          dalibre-plugin pack . -o dist
           gh release create "$GITHUB_REF_NAME" dist/zlib.books-"$version".dalibre-plugin --title "$GITHUB_REF_NAME" --generate-notes

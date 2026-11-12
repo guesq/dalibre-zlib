@@ -2,14 +2,14 @@
   "$schema": "./sdk/plugin.schema.json",
   "id": "zlib.books",
   "name": "Z-Library",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "api": 1,
+  "dalibre": ">=0.6.0",
   "icon": "book-open",
-  "description": "Search, browse, and download books from Z-Library via local zlib CLI",
+  "description": "Search, browse and download books from Z-Library, with the zlib CLI",
   "author": "guesq",
   "homepage": "https://github.com/guesq/dalibre-zlib",
   "license": "MIT",
-  "main": "main.js",
   "capabilities": {
     "bookSource": {
       "collections": true,
@@ -20,14 +20,38 @@
           "type": "select",
           "default": "",
           "options": [
-            { "value": "", "title": "Any format" },
-            { "value": "epub", "title": "EPUB" },
-            { "value": "pdf", "title": "PDF" },
-            { "value": "mobi", "title": "MOBI" },
-            { "value": "azw3", "title": "AZW3" },
-            { "value": "fb2", "title": "FB2" },
-            { "value": "djvu", "title": "DJVU" },
-            { "value": "txt", "title": "TXT" }
+            {
+              "value": "",
+              "title": "Any format"
+            },
+            {
+              "value": "epub",
+              "title": "EPUB"
+            },
+            {
+              "value": "pdf",
+              "title": "PDF"
+            },
+            {
+              "value": "mobi",
+              "title": "MOBI"
+            },
+            {
+              "value": "azw3",
+              "title": "AZW3"
+            },
+            {
+              "value": "fb2",
+              "title": "FB2"
+            },
+            {
+              "value": "djvu",
+              "title": "DJVU"
+            },
+            {
+              "value": "txt",
+              "title": "TXT"
+            }
           ]
         },
         {
@@ -35,17 +59,40 @@
           "title": "Language",
           "type": "language",
           "options": [
-            { "value": "", "title": "Any language" },
-            { "value": "zh" },
-            { "value": "en" },
-            { "value": "ja" },
-            { "value": "fr" },
-            { "value": "de" },
-            { "value": "es" },
-            { "value": "ru" },
-            { "value": "it" },
-            { "value": "pt" },
-            { "value": "ko" }
+            {
+              "value": "",
+              "title": "Any language"
+            },
+            {
+              "value": "zh"
+            },
+            {
+              "value": "en"
+            },
+            {
+              "value": "ja"
+            },
+            {
+              "value": "fr"
+            },
+            {
+              "value": "de"
+            },
+            {
+              "value": "es"
+            },
+            {
+              "value": "ru"
+            },
+            {
+              "value": "it"
+            },
+            {
+              "value": "pt"
+            },
+            {
+              "value": "ko"
+            }
           ]
         },
         {
@@ -54,43 +101,109 @@
           "type": "select",
           "default": "popular",
           "options": [
-            { "value": "popular", "title": "Most popular" },
-            { "value": "bestmatch", "title": "Best match" },
-            { "value": "date", "title": "Recently added" },
-            { "value": "year", "title": "Year (newest)" },
-            { "value": "titleA", "title": "Title (A-Z)" },
-            { "value": "filesize", "title": "File size (largest)" },
-            { "value": "filesizeA", "title": "File size (smallest)" }
+            {
+              "value": "popular",
+              "title": "Most popular"
+            },
+            {
+              "value": "bestmatch",
+              "title": "Best match"
+            },
+            {
+              "value": "date",
+              "title": "Recently added"
+            },
+            {
+              "value": "year",
+              "title": "Year (newest)"
+            },
+            {
+              "value": "titleA",
+              "title": "Title (A-Z)"
+            },
+            {
+              "value": "filesize",
+              "title": "File size (largest)"
+            },
+            {
+              "value": "filesizeA",
+              "title": "File size (smallest)"
+            }
           ]
         }
       ]
     }
   },
   "permissions": {
-    "hosts": ["localhost", "127.0.0.1"],
-    "localNetwork": true
+    "hosts": [
+      "z-library.sk"
+    ],
+    "covers": "any"
   },
   "settings": [
     {
+      "key": "email",
+      "title": "Email",
+      "description": "Your Z-Library account. Leave empty if you signed in with zlib login."
+    },
+    {
+      "key": "password",
+      "title": "Password",
+      "type": "secret"
+    },
+    {
       "key": "domain",
-      "title": "Z-Library Domain",
-      "type": "text",
-      "default": "",
-      "description": "Optional Z-Library mirror domain (e.g. https://z-lib.gd). Leave empty to use zlib's configured domain."
-    },
-    {
-      "key": "proxy",
-      "title": "Proxy",
-      "type": "text",
-      "default": "system",
-      "description": "Proxy mode: 'system' (use OS system proxy, default), 'direct' (no proxy), 'zlib' (use ~/.config/zlib/.env), or an explicit URL like http://127.0.0.1:1082."
-    },
-    {
-      "key": "bridgeUrl",
-      "title": "Local zlib bridge URL",
-      "type": "text",
-      "default": "http://localhost:17890",
-      "description": "Address of the local zlib-bridge service (default: http://localhost:17890)."
+      "title": "Domain",
+      "description": "A Z-Library mirror, as https://z-lib.gd. Leave empty for zlib's own."
     }
-  ]
+  ],
+  "tools": {
+    "zlib": {
+      "version": "0.0.13",
+      "homepage": "https://github.com/heartleo/zlib",
+      "license": "MIT",
+      "packages": {
+        "brew": "heartleo/tap/zlib",
+        "winget": "heartleo.zlib"
+      },
+      "platforms": {
+        "darwin-amd64": {
+          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.13/zlib_0.0.13_darwin_x86_64.tar.gz",
+          "sha256": "c39616572a6f8defd5f5dce65a89bdec59636acb9413902b9f9f79aa0f7e9093",
+          "size": 6148618,
+          "bin": "zlib"
+        },
+        "darwin-arm64": {
+          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.13/zlib_0.0.13_darwin_arm64.tar.gz",
+          "sha256": "23928000c923f52959d46655e3a1710c27abaee266d3efa5be314ab3cf56da0e",
+          "size": 5728280,
+          "bin": "zlib"
+        },
+        "linux-amd64": {
+          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.13/zlib_0.0.13_linux_x86_64.tar.gz",
+          "sha256": "1bc0d7038d8e5f71598c56b6383324f29269e55f3c1aab2b4a6f6d0f16588c61",
+          "size": 6044690,
+          "bin": "zlib"
+        },
+        "linux-arm64": {
+          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.13/zlib_0.0.13_linux_arm64.tar.gz",
+          "sha256": "8987306545460b356faae932e77e005d1aae47d3cec3aeb0fc2c2e768358651c",
+          "size": 5499708,
+          "bin": "zlib"
+        },
+        "windows-amd64": {
+          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.13/zlib_0.0.13_windows_x86_64.zip",
+          "sha256": "6138e7b0cbc5ea59838dd04063c44ad46751183dc340b7a0129e42c51c1023ac",
+          "size": 6227927,
+          "bin": "zlib.exe"
+        },
+        "windows-arm64": {
+          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.13/zlib_0.0.13_windows_arm64.zip",
+          "sha256": "395ce9453887d1a1244555343a677d8a2d24bb7f2e2a47a3b542b9c73868a1d3",
+          "size": 5585722,
+          "bin": "zlib.exe"
+        }
+      }
+    }
+  }
 }
