@@ -170,7 +170,7 @@ export async function get(item) {
     }
     const more = toResult({ ...b, id: item.id, url: item.url, cover: item.cover }, true);
     if (!more) return item;
-    return { ...item, ...more, cover: item.cover, url: item.url, formats: item.formats };
+    return { ...item, ...more, cover: item.cover, url: item.url, formats: more.formats.length > 0 ? more.formats : item.formats };
   }
   return item;
 }
@@ -212,7 +212,8 @@ function toPage(books, page, totalPages) {
  */
 function toResult(b, details = false) {
   if (!b || !b.id || !b.name) return null;
-  const fmt = normalizeFormat(b.extension);
+  // most-popular and recommended omit extension; fall back to EPUB unless explicit extension is unsupported
+  const fmt = normalizeFormat(b.extension) || (!b.extension && !details ? "EPUB" : null);
   if (!fmt && !details) return null;
 
   /** @type {Record<string, string>} */

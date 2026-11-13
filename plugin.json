@@ -2,7 +2,7 @@
   "$schema": "./sdk/plugin.schema.json",
   "id": "zlib.books",
   "name": "Z-Library",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "api": 1,
   "dalibre": ">=0.6.0",
   "icon": "book-open",
