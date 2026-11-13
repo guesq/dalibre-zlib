@@ -133,24 +133,38 @@ export async function search({ text, page, filters }) {
 }
 
 /**
- * A book's details for the detail panel, from zlib's MCP server's
- * get_book: its description, ISBN and pages.
+ * A book's details for the detail panel: tries zlib's MCP get_book first,
+ * and falls back to zlib search by ISBN/title when MCP stdio closes early.
  * @param {Dalibre.Result} item
  * @returns {Promise<Dalibre.Result>}
  */
 export async function get(item) {
-  const call = (/** @type {number} */ id, /** @type {string} */ method, /** @type {any} */ params) =>
-    JSON.stringify({ jsonrpc: "2.0", id, method, params });
+  const mcpBook = await fetchBookViaMCP(item.id);
+  if (mcpBook) return mergeBookDetails(item, mcpBook);
+  if (item.formats?.some((f) => f.size) && item.description) return item;
+  const searchBook = await findBookBySearch(item);
+  return searchBook ? mergeBookDetails(item, searchBook) : item;
+}
+
+/**
+ * Queries zlib's read-only MCP server for get_book; returns null if stdout
+ * closes before answering (e.g. when the host closes stdin immediately).
+ * @param {string} id
+ * @returns {Promise<any | null>}
+ */
+async function fetchBookViaMCP(id) {
+  const call = (/** @type {number} */ reqId, /** @type {string} */ method, /** @type {any} */ params) =>
+    JSON.stringify({ jsonrpc: "2.0", id: reqId, method, params });
   const stdin = [
     call(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "dalibre", version: "1" } }),
     JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
-    call(2, "tools/call", { name: "get_book", arguments: { id: item.id } }),
+    call(2, "tools/call", { name: "get_book", arguments: { id } }),
   ].join("\n") + "\n";
   let r;
   try {
     r = await dalibre.exec("zlib", ["mcp", "--read-only"], { env: env(), stdin, timeout: 30000 });
   } catch {
-    return item; // the list's details will do
+    return null;
   }
   for (const line of r.stdout.split("\n")) {
     let msg;
@@ -160,19 +174,61 @@ export async function get(item) {
       continue;
     }
     if (msg.id !== 2 || !msg.result || msg.result.isError) continue;
-    let b = msg.result.structuredContent;
-    if (!b) {
-      try {
-        b = JSON.parse(msg.result.content?.[0]?.text || "");
-      } catch {
-        return item;
-      }
+    if (msg.result.structuredContent) return msg.result.structuredContent;
+    try {
+      return JSON.parse(msg.result.content?.[0]?.text || "");
+    } catch {
+      return null;
     }
-    const more = toResult({ ...b, id: item.id, url: item.url, cover: item.cover }, true);
-    if (!more) return item;
-    return { ...item, ...more, cover: item.cover, url: item.url, formats: more.formats.length > 0 ? more.formats : item.formats };
   }
-  return item;
+  return null;
+}
+
+/**
+ * Fallback lookup via `zlib search --json` matching item.id exactly.
+ * @param {Dalibre.Result} item
+ * @returns {Promise<any | null>}
+ */
+async function findBookBySearch(item) {
+  const isbn = String(item.identifiers?.isbn || "").split(/[\s,;]+/)[0].trim();
+  const title = String(item.title || "").trim();
+  /** @type {{ q: string, count: string }[]} */
+  const attempts = [];
+  if (isbn) attempts.push({ q: isbn, count: "25" });
+  if (title && title !== isbn) attempts.push({ q: title, count: "50" });
+
+  for (const { q, count } of attempts) {
+    try {
+      const data = await zlib(["search", q, "--json", "--page", "1", "--count", count], 20000);
+      const hit = (data.books || []).find((/** @type {any} */ b) => String(b?.id || "") === item.id);
+      if (hit) return hit;
+    } catch {
+      // the list's details will do
+    }
+  }
+  return null;
+}
+
+/**
+ * Merges enriched metadata onto an existing list item without dropping existing fields.
+ * @param {Dalibre.Result} item
+ * @param {any} rawBook
+ * @returns {Dalibre.Result}
+ */
+function mergeBookDetails(item, rawBook) {
+  const more = toResult({ ...rawBook, id: item.id, url: item.url, cover: item.cover }, true);
+  if (!more) return item;
+  const defined = /** @type {Partial<Dalibre.Result>} */ (
+    Object.fromEntries(Object.entries(more).filter(([, v]) => v !== undefined))
+  );
+  return {
+    ...item,
+    ...defined,
+    identifiers: { ...item.identifiers, ...more.identifiers },
+    cover: item.cover,
+    url: item.url,
+    formats: more.formats.length > 0 ? more.formats : item.formats,
+  };
 }
 
 /**
