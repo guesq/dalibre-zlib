@@ -1,7 +1,9 @@
 // @ts-check
-// Z-Library book source for Dalibre, backed by the local zlib CLI bridge.
+// Z-Library book source for Dalibre. Every request goes through the zlib
+// CLI (github.com/heartleo/zlib), which Dalibre gets and runs for us as
+// this plugin's tool: it knows Z-Library's sign-in, mirrors and quotas.
 
-const DEFAULT_BRIDGE = "http://localhost:17890";
+import { mkdir } from "node:fs/promises";
 
 /** @type {Set<string>} */
 const VALID_FORMATS = new Set([
@@ -12,55 +14,83 @@ const VALID_FORMATS = new Set([
 
 /** @type {Record<string, string>} */
 const LANG_TO_ISO = {
-  english: "en",
-  chinese: "zh",
-  japanese: "ja",
-  french: "fr",
-  german: "de",
-  spanish: "es",
-  russian: "ru",
-  italian: "it",
-  portuguese: "pt",
-  korean: "ko",
-  dutch: "nl",
-  polish: "pl",
-  arabic: "ar",
-  latin: "la",
-  greek: "el",
-  swedish: "sv",
-  danish: "da",
-  norwegian: "no",
-  finnish: "fi",
-  hungarian: "hu",
-  catalan: "ca",
-  esperanto: "eo",
+  english: "en", chinese: "zh", japanese: "ja", french: "fr", german: "de",
+  spanish: "es", russian: "ru", italian: "it", portuguese: "pt", korean: "ko",
+  dutch: "nl", polish: "pl", arabic: "ar", latin: "la", greek: "el",
+  swedish: "sv", danish: "da", norwegian: "no", finnish: "fi", hungarian: "hu",
+  catalan: "ca", esperanto: "eo",
 };
 
+/** @type {Record<string, string>} zlib's --language takes names */
+const ISO_TO_LANG = Object.fromEntries(Object.entries(LANG_TO_ISO).map(([name, iso]) => [iso, name]));
+
 const COLLECTIONS = [
-  { id: "popular", title: "Most popular" },
-  { id: "recommended", title: "Recommended" },
-  { id: "favorites", title: "Favorites" },
+  { id: "popular", title: "Most popular", command: "most-popular" },
+  { id: "recommended", title: "Recommended", command: "recommended" },
+  { id: "favorites", title: "Favorites", command: "favorites" },
 ];
 
-function bridgeBase() {
-  const raw = (dalibre.settings?.bridgeUrl || DEFAULT_BRIDGE).trim();
-  const base = (raw || DEFAULT_BRIDGE).replace(/\/+$/, "");
-  // Prefer localhost over 127.0.0.1 so macOS system proxy ExceptionsList bypasses local proxy
-  return base.replace(/^http:\/\/127\.0\.0\.1(?=:|\/|$)/i, "http://localhost");
-}
+// zlib's exit codes (docs/usage.md#exit-codes).
+const EXIT_AUTH = 3;
+const EXIT_NETWORK = 4;
 
-function extraSettingsQuery() {
-  const domain = (dalibre.settings?.domain || "").trim();
-  const proxy = (dalibre.settings?.proxy || "system").trim();
-  return (
-    (proxy ? `&proxy=${encodeURIComponent(proxy)}` : "") +
-    (domain ? `&domain=${encodeURIComponent(domain)}` : "")
-  );
+/** The environment zlib runs with: the mirror chosen in the settings. */
+function env() {
+  const domain = (dalibre.settings.domain || "").trim();
+  return domain ? { ZLIB_DOMAIN: domain } : {};
 }
 
 /**
- * @returns {Dalibre.Collection[]}
+ * Runs zlib with args and returns its output parsed as JSON, turning its
+ * exit codes into errors Dalibre shows.
+ * @param {string[]} args
+ * @param {number} [timeout]
  */
+async function zlib(args, timeout = 60000) {
+  const r = await dalibre.exec("zlib", args, { env: env(), timeout });
+  if (r.code !== 0) throw failure(r);
+  try {
+    return JSON.parse(r.stdout);
+  } catch {
+    throw dalibre.error("invalid", "zlib printed what isn’t JSON: " + r.stdout.slice(0, 200));
+  }
+}
+
+/** @param {Dalibre.ExecResult} r */
+function failure(r) {
+  const msg = (r.stderr || r.stdout).trim().split("\n").pop() || `zlib exited with ${r.code}`;
+  switch (r.code) {
+    case EXIT_AUTH:
+      return dalibre.error("auth", "Sign in to Z-Library: fill in your email and password in the plugin’s settings");
+    case EXIT_NETWORK:
+      return dalibre.error("unavailable", msg + " (try another domain in the plugin’s settings)");
+  }
+  return dalibre.error("unavailable", msg);
+}
+
+/**
+ * Called when the plugin loads: signs in with the settings' account when
+ * zlib isn't signed in yet.
+ */
+export async function check() {
+  const profile = await dalibre.exec("zlib", ["profile", "--json"], { env: env() });
+  if (profile.code === 0) return;
+  if (profile.code !== EXIT_AUTH) throw failure(profile);
+  const email = (dalibre.settings.email || "").trim();
+  const password = dalibre.settings.password || "";
+  if (!email || !password) {
+    throw dalibre.error("auth", "Sign in to Z-Library: fill in your email and password in the plugin’s settings");
+  }
+  const args = ["login", "--email", email, "--password", password];
+  const domain = (dalibre.settings.domain || "").trim();
+  if (domain) args.push("--domain", domain);
+  const login = await dalibre.exec("zlib", args, { env: env() });
+  if (login.code !== 0) {
+    throw dalibre.error("auth", "Z-Library refused the sign-in: " + (login.stderr || login.stdout).trim().split("\n").pop());
+  }
+}
+
+/** @returns {Dalibre.Collection[]} */
 export function collections() {
   return COLLECTIONS.map(({ id, title }) => ({ id, title }));
 }
@@ -70,22 +100,20 @@ export function collections() {
  * @returns {Promise<Dalibre.Page>}
  */
 export async function list({ collection, page, filters }) {
-  const base = bridgeBase();
-  const col = collection || "popular";
-  if (!COLLECTIONS.some((c) => c.id === col)) {
-    throw dalibre.error("notFound", `Unknown collection: ${col}`);
-  }
+  const col = COLLECTIONS.find((c) => c.id === (collection || "popular"));
+  if (!col) throw dalibre.error("notFound", `Unknown collection: ${collection}`);
   const p = page || 1;
+  // Only favorites has pages; the others are one list.
+  if (col.id !== "favorites" && p > 1) return { items: [] };
+  const args = [col.command, "--json"];
+  if (col.id === "favorites") args.push("--page", String(p));
+  const data = await zlib(args);
+  let books = Array.isArray(data) ? data : data.books || [];
   const ext = filters?.format || "";
   const lang = filters?.language || "";
-  const url =
-    `${base}/collection?id=${encodeURIComponent(col)}&page=${p}` +
-    (ext ? `&ext=${encodeURIComponent(ext)}` : "") +
-    (lang ? `&lang=${encodeURIComponent(lang)}` : "") +
-    extraSettingsQuery();
-
-  const data = await fetchBridgeJSON(url);
-  return toPage(data, base, p);
+  if (ext) books = books.filter((/** @type {any} */ b) => String(b.extension || "").toLowerCase() === ext);
+  if (lang) books = books.filter((/** @type {any} */ b) => normalizeLanguage(b.language) === lang);
+  return toPage(books, p, Number(data.total_pages) || 1);
 }
 
 /**
@@ -94,154 +122,98 @@ export async function list({ collection, page, filters }) {
  */
 export async function search({ text, page, filters }) {
   const q = (text || "").trim();
-  if (!q) {
-    return list({ text: "", page: page || 1, cursor: "", filters: filters || {}, collection: "popular" });
-  }
-  const base = bridgeBase();
+  if (!q) return list({ text: "", page: page || 1, cursor: "", filters: filters || {}, collection: "popular" });
   const p = page || 1;
-  const ext = filters?.format || "";
-  const lang = filters?.language || "";
-  const sort = filters?.sort || "popular";
-  const url =
-    `${base}/search?q=${encodeURIComponent(q)}&page=${p}&count=25` +
-    (ext ? `&ext=${encodeURIComponent(ext)}` : "") +
-    (lang ? `&lang=${encodeURIComponent(lang)}` : "") +
-    (sort ? `&order=${encodeURIComponent(sort)}` : "") +
-    extraSettingsQuery();
-
-  const data = await fetchBridgeJSON(url);
-  return toPage(data, base, p);
+  const args = ["search", q, "--json", "--page", String(p), "--count", "25"];
+  if (filters?.format) args.push("--ext", filters.format);
+  if (filters?.language) args.push("--language", ISO_TO_LANG[filters.language] || filters.language);
+  if (filters?.sort) args.push("--order", filters.sort);
+  const data = await zlib(args);
+  return toPage(data.books || [], p, Number(data.total_pages) || 1);
 }
 
 /**
- * Enriches a result with full book metadata when opened in the detail panel.
+ * A book's details for the detail panel, from zlib's MCP server's
+ * get_book: its description, ISBN and pages.
  * @param {Dalibre.Result} item
  * @returns {Promise<Dalibre.Result>}
  */
 export async function get(item) {
-  const base = bridgeBase();
+  const call = (/** @type {number} */ id, /** @type {string} */ method, /** @type {any} */ params) =>
+    JSON.stringify({ jsonrpc: "2.0", id, method, params });
+  const stdin = [
+    call(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "dalibre", version: "1" } }),
+    JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+    call(2, "tools/call", { name: "get_book", arguments: { id: item.id } }),
+  ].join("\n") + "\n";
+  let r;
   try {
-    const b = await fetchBridgeJSON(
-      `${base}/book?id=${encodeURIComponent(item.id)}${extraSettingsQuery()}`
-    );
-    if (!b || !b.id) return item;
-    const enriched = toResult(b, base);
-    if (!enriched) return item;
-    return {
-      ...item,
-      ...enriched,
-      cover: enriched.cover || item.cover,
-      url: enriched.url || item.url,
-      formats: enriched.formats.length > 0 ? enriched.formats : item.formats,
-    };
+    r = await dalibre.exec("zlib", ["mcp", "--read-only"], { env: env(), stdin, timeout: 30000 });
   } catch {
-    return item;
+    return item; // the list's details will do
   }
+  for (const line of r.stdout.split("\n")) {
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (msg.id !== 2 || !msg.result || msg.result.isError) continue;
+    let b = msg.result.structuredContent;
+    if (!b) {
+      try {
+        b = JSON.parse(msg.result.content?.[0]?.text || "");
+      } catch {
+        return item;
+      }
+    }
+    const more = toResult({ ...b, id: item.id, url: item.url, cover: item.cover }, true);
+    if (!more) return item;
+    return { ...item, ...more, cover: item.cover, url: item.url, formats: item.formats };
+  }
+  return item;
 }
 
 /**
- * Two-phase download resolution: asks the local bridge to download the book via
- * zlib CLI (using configured domain & system/custom proxy) into a temporary file,
- * then hands Dalibre a fast local streaming URL.
+ * zlib downloads the book into /work; Dalibre moves it into the library.
  * @param {Dalibre.Result} item
- * @param {Dalibre.FormatName} format
  * @returns {Promise<Dalibre.DownloadRequest>}
  */
-export async function resolve(item, format) {
-  const base = bridgeBase();
-  const prepUrl =
-    `${base}/prepare?id=${encodeURIComponent(item.id)}&format=${encodeURIComponent(format)}` +
-    extraSettingsQuery();
-  const data = await fetchBridgeJSON(prepUrl);
-  if (!data || !data.token) {
-    throw dalibre.error("unavailable", "Failed to prepare book download from Z-Library");
-  }
-  return {
-    url: `${base}/file?token=${encodeURIComponent(data.token)}`,
-    ...(data.filename ? { filename: String(data.filename) } : {}),
-  };
+export async function resolve(item) {
+  const dir = `/work/dl-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  await mkdir(dir, { recursive: true });
+  const info = await zlib(["download", item.id, "--dir", dir, "--json"], 10 * 60000);
+  const name = String(info.path || "").split(/[\\/]/).pop();
+  if (!name) throw dalibre.error("notFound", "zlib didn’t say where it saved the book");
+  return { path: `${dir}/${name}` };
 }
 
 /**
- * @param {string} url
- * @returns {Promise<any>}
- */
-async function fetchBridgeJSON(url) {
-  let res;
-  try {
-    res = await fetch(url, { headers: { Accept: "application/json" } });
-  } catch {
-    throw dalibre.error(
-      "unavailable",
-      `Cannot connect to local zlib-bridge (${bridgeBase()}). Make sure the bridge service is running.`
-    );
-  }
-
-  let data = null;
-  try {
-    data = await res.json();
-  } catch {
-    // non-JSON response
-  }
-
-  if (!res.ok) {
-    const msg = data?.error || `zlib-bridge returned HTTP ${res.status}`;
-    if (res.status === 401 || data?.kind === "auth") {
-      throw dalibre.error("auth", `${msg} (Run 'zlib login' in terminal)`);
-    }
-    if (res.status === 429 || data?.kind === "rateLimited") {
-      throw dalibre.error("rateLimited", msg);
-    }
-    if (res.status === 404 || data?.kind === "notFound") {
-      throw dalibre.error("notFound", msg);
-    }
-    throw dalibre.error("unavailable", msg);
-  }
-  return data;
-}
-
-/**
- * @param {any} data
- * @param {string} base
- * @param {number} currentPage
+ * @param {any[]} books
+ * @param {number} page
+ * @param {number} totalPages
  * @returns {Dalibre.Page}
  */
-function toPage(data, base, currentPage) {
-  const rawBooks = Array.isArray(data?.books) ? data.books : [];
+function toPage(books, page, totalPages) {
   /** @type {Dalibre.Result[]} */
   const items = [];
-  for (const b of rawBooks) {
-    const r = toResult(b, base);
+  for (const b of books) {
+    const r = toResult(b);
     if (r) items.push(r);
   }
-  const totalPages = Number(data?.total_pages) || 1;
-  return {
-    items: items.slice(0, 100),
-    hasMore: currentPage < totalPages && items.length > 0,
-  };
+  return { items: items.slice(0, 100), hasMore: page < totalPages && items.length > 0 };
 }
 
 /**
- * @param {any} b
- * @param {string} base
+ * @param {any} b a book as zlib's --json prints it
+ * @param {boolean} [details] b is get_book's details, without a format
  * @returns {Dalibre.Result | null}
  */
-function toResult(b, base) {
+function toResult(b, details = false) {
   if (!b || !b.id || !b.name) return null;
-
   const fmt = normalizeFormat(b.extension);
-  if (!fmt) return null;
-
-  const sizeBytes = parseSizeBytes(b.size);
-  const extra = extraSettingsQuery();
-  const downloadUrl = `${base}/download?id=${encodeURIComponent(String(b.id))}${extra}`;
-
-  /** @type {Dalibre.Format} */
-  const formatObj = {
-    format: fmt,
-    url: downloadUrl,
-    ...(sizeBytes ? { size: sizeBytes } : {}),
-  };
+  if (!fmt && !details) return null;
 
   /** @type {Record<string, string>} */
   const identifiers = { zlib: String(b.id) };
@@ -254,31 +226,15 @@ function toResult(b, base) {
   if (b.pages && b.pages !== "0") fields.push({ label: "Pages", value: String(b.pages) });
   if (b.edition) fields.push({ label: "Edition", value: String(b.edition) });
   if (b.rating && b.rating !== "0.0" && b.rating !== "0") {
-    const ratingStr =
-      b.quality && b.quality !== "0.0" ? `${b.rating} (Quality ${b.quality})` : String(b.rating);
-    fields.push({ label: "Rating", value: ratingStr });
+    fields.push({ label: "Rating", value: b.quality && b.quality !== "0.0" ? `${b.rating} (Quality ${b.quality})` : String(b.rating) });
   }
   if (isbn) fields.push({ label: "ISBN", value: isbn });
 
-  const langIso = normalizeLanguage(b.language);
   const year = String(b.year || "").trim();
-  const validYear = /^[12]\d{3}$/.test(year) ? year : undefined;
-
   const tags = b.categories
-    ? String(b.categories)
-        .split(/[,;/|]/)
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .slice(0, 8)
-    : undefined;
-
-  let cover = "";
-  const rawCover = b.cover_raw || b.cover || "";
-  if (typeof rawCover === "string" && rawCover.startsWith(base)) {
-    cover = rawCover;
-  } else if (typeof rawCover === "string" && /^https?:\/\//i.test(rawCover)) {
-    cover = `${base}/cover?url=${encodeURIComponent(rawCover)}${extra}`;
-  }
+    ? String(b.categories).split(/[,;/|]/).map((s) => s.trim()).filter(Boolean).slice(0, 8)
+    : [];
+  const sizeBytes = parseSizeBytes(b.size);
 
   return {
     id: String(b.id).slice(0, 256),
@@ -286,15 +242,31 @@ function toResult(b, base) {
     authors: Array.isArray(b.authors) && b.authors.length > 0 ? b.authors.map(String) : undefined,
     description: b.description ? String(b.description).trim() : undefined,
     publisher: b.publisher ? String(b.publisher).trim() : undefined,
-    language: langIso,
-    pubdate: validYear,
-    tags: tags && tags.length > 0 ? tags : undefined,
+    language: normalizeLanguage(b.language),
+    pubdate: /^[12]\d{3}$/.test(year) ? year : undefined,
+    tags: tags.length > 0 ? tags : undefined,
     identifiers,
-    cover: cover || undefined,
+    cover: coverURL(b),
     url: b.url && /^https?:\/\//i.test(b.url) ? String(b.url) : undefined,
     fields: fields.length > 0 ? fields.slice(0, 12) : undefined,
-    formats: [formatObj],
+    formats: fmt ? [{ format: fmt, ...(sizeBytes ? { size: sizeBytes } : {}) }] : [],
   };
+}
+
+/**
+ * A book's cover as an absolute https URL: zlib gives some relative to the
+ * book's page. Covers are on mirrors and CDNs, which permissions.covers
+ * "any" lets Dalibre load.
+ * @param {any} b
+ */
+function coverURL(b) {
+  if (!b.cover) return undefined;
+  try {
+    const u = new URL(String(b.cover), b.url || undefined);
+    return u.protocol === "https:" ? u.href : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -302,14 +274,11 @@ function toResult(b, base) {
  * @returns {Dalibre.FormatName | null}
  */
 function normalizeFormat(ext) {
-  if (!ext) return "EPUB";
+  if (!ext) return null;
   const upper = String(ext).trim().replace(/^\./, "").toUpperCase();
   if (upper === "DOC") return "DOCX";
   if (upper === "HTM" || upper === "HTML") return "HTMLZ";
-  if (VALID_FORMATS.has(upper)) {
-    return /** @type {Dalibre.FormatName} */ (upper);
-  }
-  return null;
+  return VALID_FORMATS.has(upper) ? /** @type {Dalibre.FormatName} */ (upper) : null;
 }
 
 /**
@@ -319,7 +288,6 @@ function normalizeFormat(ext) {
 function normalizeLanguage(lang) {
   if (!lang) return undefined;
   const raw = String(lang).trim();
-  if (!raw) return undefined;
   const lower = raw.toLowerCase();
   if (LANG_TO_ISO[lower]) return LANG_TO_ISO[lower];
   if (/^[a-z]{2,3}(-[A-Za-z]{2,4})?$/.test(raw)) return raw;
@@ -327,27 +295,17 @@ function normalizeLanguage(lang) {
 }
 
 /**
- * Converts human-readable size strings like "2.51 MB" or "450 KB" into integer bytes.
- * @param {string | number | undefined} sizeVal
+ * "2.51 MB" or "450 KB" in bytes.
+ * @param {string | number | undefined} size
  * @returns {number | undefined}
  */
-function parseSizeBytes(sizeVal) {
-  if (typeof sizeVal === "number" && Number.isFinite(sizeVal) && sizeVal > 0) {
-    return Math.round(sizeVal);
-  }
-  if (typeof sizeVal !== "string") return undefined;
-  const m = /^([\d.]+)\s*(B|KB|MB|GB)$/i.exec(sizeVal.trim());
+function parseSizeBytes(size) {
+  if (typeof size === "number" && Number.isFinite(size) && size > 0) return Math.round(size);
+  if (typeof size !== "string") return undefined;
+  const m = /^([\d.]+)\s*(B|KB|MB|GB)$/i.exec(size.trim());
   if (!m) return undefined;
   const num = parseFloat(m[1]);
   if (!Number.isFinite(num) || num <= 0) return undefined;
-  const unit = m[2].toUpperCase();
-  const mult =
-    unit === "GB"
-      ? 1024 * 1024 * 1024
-      : unit === "MB"
-      ? 1024 * 1024
-      : unit === "KB"
-      ? 1024
-      : 1;
+  const mult = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 }[/** @type {"B"|"KB"|"MB"|"GB"} */ (m[2].toUpperCase())];
   return Math.round(num * mult);
 }
