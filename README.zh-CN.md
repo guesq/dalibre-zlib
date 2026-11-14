@@ -26,16 +26,3 @@
 | **Domain** | Z-Library 镜像，如 `https://z-lib.gd`。留空则用 zlib 自己的。`zlib doctor` 会列出你的网络能访问的域名。 |
 
 Dalibre 会把系统代理传给 zlib，不需要另外设置。
-
-## 开发
-
-```sh
-npm install -g dalibre-plugin
-dalibre-plugin check .                       # 校验 plugin.json 和每个平台的 zlib 构建
-dalibre-plugin search . "dune"               # 像 Dalibre 一样运行插件
-dalibre-plugin search . "dune" --tool zlib=/path/to/zlib   # 使用你自己的 zlib
-```
-
-升级 zlib：运行 `dalibre-plugin tool add . gh:heartleo/zlib@vX.Y.Z --brew heartleo/tap/zlib-cli --winget heartleo.zlib`，并提升 `version`。新构建运行前，用户会被再次询问。
-
-推送 `v2.0.0` 这样的 tag（与 plugin.json 的 version 一致）会生成带 `.dalibre-plugin` 包的 release，Dalibre 从这里安装和更新。

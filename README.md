@@ -26,16 +26,3 @@ If you already signed in with `zlib login` in a terminal, leave them empty.
 | **Domain** | A Z-Library mirror, such as `https://z-lib.gd`. Leave it empty for zlib's own. `zlib doctor` lists the ones reachable from your network. |
 
 Dalibre passes your system's proxy to zlib, so there is nothing to set for it.
-
-## Develop
-
-```sh
-npm install -g dalibre-plugin
-dalibre-plugin check .                       # validates plugin.json and every platform's zlib build
-dalibre-plugin search . "dune"               # runs the plugin as Dalibre would
-dalibre-plugin search . "dune" --tool zlib=/path/to/zlib   # with a zlib of your own
-```
-
-To update zlib, run `dalibre-plugin tool add . gh:heartleo/zlib@vX.Y.Z --brew heartleo/tap/zlib-cli --winget heartleo.zlib` and bump `version`. Users are asked again before the new build runs.
-
-Pushing a tag such as `v2.0.0` (plugin.json's version) makes a release with the `.dalibre-plugin` package. Dalibre installs and updates from it.
