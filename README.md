@@ -36,6 +36,6 @@ dalibre-plugin search . "dune"               # runs the plugin as Dalibre would
 dalibre-plugin search . "dune" --tool zlib=/path/to/zlib   # with a zlib of your own
 ```
 
-To update zlib, run `dalibre-plugin tool add . gh:heartleo/zlib@vX.Y.Z --brew heartleo/tap/zlib --winget heartleo.zlib` and bump `version`. Users are asked again before the new build runs.
+To update zlib, run `dalibre-plugin tool add . gh:heartleo/zlib@vX.Y.Z --brew heartleo/tap/zlib-cli --winget heartleo.zlib` and bump `version`. Users are asked again before the new build runs.
 
 Pushing a tag such as `v2.0.0` (plugin.json's version) makes a release with the `.dalibre-plugin` package. Dalibre installs and updates from it.

@@ -2,7 +2,7 @@
   "$schema": "./sdk/plugin.schema.json",
   "id": "zlib.books",
   "name": "Z-Library",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "api": 1,
   "dalibre": ">=0.6.0",
   "icon": "book-open",
@@ -159,48 +159,49 @@
   ],
   "tools": {
     "zlib": {
-      "version": "0.0.13",
+      "version": "0.0.14",
+      "min": "0.0.13",
       "homepage": "https://github.com/heartleo/zlib",
       "license": "MIT",
       "packages": {
-        "brew": "heartleo/tap/zlib",
+        "brew": "heartleo/tap/zlib-cli",
         "winget": "heartleo.zlib"
       },
       "platforms": {
         "darwin-amd64": {
-          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.13/zlib_0.0.13_darwin_x86_64.tar.gz",
-          "sha256": "c39616572a6f8defd5f5dce65a89bdec59636acb9413902b9f9f79aa0f7e9093",
-          "size": 6148618,
+          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.14/zlib_0.0.14_darwin_x86_64.tar.gz",
+          "sha256": "5249c40ba485932b31186f30b2e6b6725c9f1f985b25765e02d9c1bb71cbaf7b",
+          "size": 6149491,
           "bin": "zlib"
         },
         "darwin-arm64": {
-          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.13/zlib_0.0.13_darwin_arm64.tar.gz",
-          "sha256": "23928000c923f52959d46655e3a1710c27abaee266d3efa5be314ab3cf56da0e",
-          "size": 5728280,
+          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.14/zlib_0.0.14_darwin_arm64.tar.gz",
+          "sha256": "0442dfd5d4e6482e8635a5b2441f68a83abbc14d84e22e1d8a760560ab7b72ed",
+          "size": 5729797,
           "bin": "zlib"
         },
         "linux-amd64": {
-          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.13/zlib_0.0.13_linux_x86_64.tar.gz",
-          "sha256": "1bc0d7038d8e5f71598c56b6383324f29269e55f3c1aab2b4a6f6d0f16588c61",
-          "size": 6044690,
+          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.14/zlib_0.0.14_linux_x86_64.tar.gz",
+          "sha256": "d9a066b7f97edc4f6046d342183cd82d095ba311e880fbf3bc1dd0b341362651",
+          "size": 6047147,
           "bin": "zlib"
         },
         "linux-arm64": {
-          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.13/zlib_0.0.13_linux_arm64.tar.gz",
-          "sha256": "8987306545460b356faae932e77e005d1aae47d3cec3aeb0fc2c2e768358651c",
-          "size": 5499708,
+          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.14/zlib_0.0.14_linux_arm64.tar.gz",
+          "sha256": "1abcefcc5818c9647060c8ba586b4947fad726b7e20e2d27de6622ae9a1fffa9",
+          "size": 5500872,
           "bin": "zlib"
         },
         "windows-amd64": {
-          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.13/zlib_0.0.13_windows_x86_64.zip",
-          "sha256": "6138e7b0cbc5ea59838dd04063c44ad46751183dc340b7a0129e42c51c1023ac",
-          "size": 6227927,
+          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.14/zlib_0.0.14_windows_x86_64.zip",
+          "sha256": "57948e02984edeab21ffcb94c54fc16cc2802acc1e2a1864e356469999523372",
+          "size": 6228613,
           "bin": "zlib.exe"
         },
         "windows-arm64": {
-          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.13/zlib_0.0.13_windows_arm64.zip",
-          "sha256": "395ce9453887d1a1244555343a677d8a2d24bb7f2e2a47a3b542b9c73868a1d3",
-          "size": 5585722,
+          "url": "https://github.com/heartleo/zlib/releases/download/v0.0.14/zlib_0.0.14_windows_arm64.zip",
+          "sha256": "8febd034ff8a25ba5476f87d3185dd71b73da0330f4f0baf1adfc4c58c2cae8b",
+          "size": 5586932,
           "bin": "zlib.exe"
         }
       }

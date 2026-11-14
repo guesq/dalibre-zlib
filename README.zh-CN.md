@@ -36,6 +36,6 @@ dalibre-plugin search . "dune"               # 像 Dalibre 一样运行插件
 dalibre-plugin search . "dune" --tool zlib=/path/to/zlib   # 使用你自己的 zlib
 ```
 
-升级 zlib：运行 `dalibre-plugin tool add . gh:heartleo/zlib@vX.Y.Z --brew heartleo/tap/zlib --winget heartleo.zlib`，并提升 `version`。新构建运行前，用户会被再次询问。
+升级 zlib：运行 `dalibre-plugin tool add . gh:heartleo/zlib@vX.Y.Z --brew heartleo/tap/zlib-cli --winget heartleo.zlib`，并提升 `version`。新构建运行前，用户会被再次询问。
 
 推送 `v2.0.0` 这样的 tag（与 plugin.json 的 version 一致）会生成带 `.dalibre-plugin` 包的 release，Dalibre 从这里安装和更新。
