@@ -3,7 +3,7 @@
 // CLI (github.com/heartleo/zlib), which Dalibre gets and runs for us as
 // this plugin's tool: it knows Z-Library's sign-in, mirrors and quotas.
 
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 /** @type {Set<string>} */
 const VALID_FORMATS = new Set([
@@ -34,10 +34,216 @@ const COLLECTIONS = [
 const EXIT_AUTH = 3;
 const EXIT_NETWORK = 4;
 
-/** The environment zlib runs with: the mirror chosen in the settings. */
-function env() {
-  const domain = (dalibre.settings.domain || "").trim();
+const DOMAIN_STATE_PATH = "/data/domain.json";
+
+/** @type {{ configuredDomain: string, activeDomain: string } | null} */
+let cachedDomainState = null;
+
+/** @type {Promise<string[]> | null} */
+let doctorPromise = null;
+
+/**
+ * Normalizes a domain or URL to an origin ("https://host"), or "" when empty.
+ * @param {string | undefined} raw
+ * @returns {string}
+ */
+function normalizeOrigin(raw) {
+  const val = String(raw || "").trim().replace(/\/+$/, "");
+  if (!val) return "";
+  try {
+    const u = new URL(val.includes("://") ? val : `https://${val}`);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.origin : val;
+  } catch {
+    return val;
+  }
+}
+
+/**
+ * Returns the domain currently in use: the auto-discovered healthy domain from
+ * /data/domain.json (unless the user changed the Domain setting since then),
+ * or the Domain setting itself.
+ * @returns {Promise<string>}
+ */
+async function getActiveDomain() {
+  const configured = normalizeOrigin(dalibre.settings.domain);
+  if (!cachedDomainState) {
+    try {
+      const raw = await readFile(DOMAIN_STATE_PATH, "utf8");
+      const parsed = JSON.parse(raw);
+      cachedDomainState = {
+        configuredDomain: normalizeOrigin(parsed?.configuredDomain),
+        activeDomain: normalizeOrigin(parsed?.activeDomain),
+      };
+    } catch {
+      cachedDomainState = { configuredDomain: configured, activeDomain: "" };
+    }
+  }
+  if (cachedDomainState.configuredDomain !== configured) {
+    cachedDomainState = { configuredDomain: configured, activeDomain: "" };
+    try {
+      await writeFile(DOMAIN_STATE_PATH, JSON.stringify(cachedDomainState));
+    } catch {
+      // ignore persistence errors
+    }
+  }
+  return cachedDomainState.activeDomain || configured;
+}
+
+/**
+ * Persists a newly discovered healthy domain to memory and /data/domain.json.
+ * @param {string} domain
+ */
+async function saveActiveDomain(domain) {
+  const configured = normalizeOrigin(dalibre.settings.domain);
+  const active = normalizeOrigin(domain);
+  cachedDomainState = { configuredDomain: configured, activeDomain: active };
+  try {
+    await writeFile(DOMAIN_STATE_PATH, JSON.stringify(cachedDomainState));
+  } catch {
+    // ignore persistence errors
+  }
+}
+
+/**
+ * The environment zlib runs with: the active or configured mirror.
+ * @param {string} [domainOverride]
+ * @returns {Promise<Record<string, string>>}
+ */
+async function env(domainOverride) {
+  const domain = domainOverride !== undefined ? domainOverride : await getActiveDomain();
   return domain ? { ZLIB_DOMAIN: domain } : {};
+}
+
+/** @param {Dalibre.ExecResult} r */
+function isDomainFailure(r) {
+  if (r.code === EXIT_NETWORK) return true;
+  const out = `${r.stderr || ""}\n${r.stdout || ""}`;
+  return /run `zlib doctor`|is not usable for EAPI|domain is not configured/i.test(out);
+}
+
+/**
+ * Extracts hostnames that just failed so failover picks a different mirror.
+ * @param {string} domainUsed
+ * @param {string} [output]
+ * @returns {Set<string>}
+ */
+function extractFailedHosts(domainUsed, output = "") {
+  /** @type {Set<string>} */
+  const hosts = new Set();
+  if (domainUsed) {
+    try {
+      hosts.add(new URL(domainUsed).hostname.toLowerCase());
+    } catch {
+      hosts.add(domainUsed.toLowerCase());
+    }
+  }
+  for (const m of output.matchAll(/\(([a-z0-9-]+(?:\.[a-z0-9-]+)+)\)/gi)) {
+    hosts.add(m[1].toLowerCase());
+  }
+  return hosts;
+}
+
+/**
+ * Runs `zlib doctor --json` to find a healthy mirror, saves it as the new
+ * active domain in /data/domain.json, and returns it.
+ * @param {Set<string>} failedHosts
+ * @param {string} previousDomain
+ * @returns {Promise<string | null>}
+ */
+async function switchToHealthyDomain(failedHosts, previousDomain) {
+  const current = await getActiveDomain();
+  if (current && current !== previousDomain) {
+    try {
+      if (!failedHosts.has(new URL(current).hostname.toLowerCase())) return current;
+    } catch {
+      // continue to probe
+    }
+  }
+
+  if (!doctorPromise) {
+    doctorPromise = (async () => {
+      try {
+        const r = await dalibre.exec("zlib", ["doctor", "--json"], { timeout: 20000 });
+        const list = JSON.parse(r.stdout || "[]");
+        if (!Array.isArray(list)) return [];
+        /** @type {string[]} */
+        const origins = [];
+        for (const item of list) {
+          if (item?.status && item.status !== "healthy") continue;
+          const candidate = normalizeOrigin(item?.final_url || item?.domain);
+          if (candidate.startsWith("https://") && !origins.includes(candidate)) {
+            origins.push(candidate);
+          }
+        }
+        return origins;
+      } catch {
+        return [];
+      } finally {
+        doctorPromise = null;
+      }
+    })();
+  }
+
+  const origins = await doctorPromise;
+  if (origins.length === 0) return null;
+
+  const chosen =
+    origins.find((origin) => {
+      try {
+        return !failedHosts.has(new URL(origin).hostname.toLowerCase());
+      } catch {
+        return true;
+      }
+    }) || origins[0];
+
+  await saveActiveDomain(chosen);
+  return chosen;
+}
+
+/**
+ * Runs zlib with automatic domain failover on network or timeout errors.
+ * @param {string[]} args
+ * @param {Dalibre.ExecOptions} [options]
+ * @returns {Promise<Dalibre.ExecResult>}
+ */
+async function execZlib(args, options = {}) {
+  const totalTimeout = options.timeout ?? 60000;
+  const initialTimeout = totalTimeout <= 60000 ? Math.min(totalTimeout, 15000) : totalTimeout;
+  const domainUsed = await getActiveDomain();
+
+  /** @type {Dalibre.ExecResult | null} */
+  let firstResult = null;
+  /** @type {unknown} */
+  let firstError = null;
+
+  try {
+    firstResult = await dalibre.exec("zlib", args, {
+      ...options,
+      env: { ...(await env(domainUsed)), ...options.env },
+      timeout: initialTimeout,
+    });
+  } catch (err) {
+    firstError = err;
+  }
+
+  if (firstResult && !isDomainFailure(firstResult)) {
+    return firstResult;
+  }
+
+  const output = firstResult ? `${firstResult.stderr || ""}\n${firstResult.stdout || ""}` : "";
+  const failedHosts = extractFailedHosts(domainUsed, output);
+  const newDomain = await switchToHealthyDomain(failedHosts, domainUsed);
+
+  if (!newDomain) {
+    if (firstError) throw firstError;
+    return /** @type {Dalibre.ExecResult} */ (firstResult);
+  }
+
+  return dalibre.exec("zlib", args, {
+    ...options,
+    env: { ...(await env(newDomain)), ...options.env },
+    timeout: totalTimeout,
+  });
 }
 
 /**
@@ -47,7 +253,7 @@ function env() {
  * @param {number} [timeout]
  */
 async function zlib(args, timeout = 60000) {
-  const r = await dalibre.exec("zlib", args, { env: env(), timeout });
+  const r = await execZlib(args, { timeout });
   if (r.code !== 0) throw failure(r);
   try {
     return JSON.parse(r.stdout);
@@ -73,7 +279,7 @@ function failure(r) {
  * zlib isn't signed in yet.
  */
 export async function check() {
-  const profile = await dalibre.exec("zlib", ["profile", "--json"], { env: env() });
+  const profile = await execZlib(["profile", "--json"]);
   if (profile.code === 0) return;
   if (profile.code !== EXIT_AUTH) throw failure(profile);
   const email = (dalibre.settings.email || "").trim();
@@ -81,10 +287,7 @@ export async function check() {
   if (!email || !password) {
     throw dalibre.error("auth", "Sign in to Z-Library: fill in your email and password in the plugin’s settings");
   }
-  const args = ["login", "--email", email, "--password", password];
-  const domain = (dalibre.settings.domain || "").trim();
-  if (domain) args.push("--domain", domain);
-  const login = await dalibre.exec("zlib", args, { env: env() });
+  const login = await execZlib(["login", "--email", email, "--password", password]);
   if (login.code !== 0) {
     throw dalibre.error("auth", "Z-Library refused the sign-in: " + (login.stderr || login.stdout).trim().split("\n").pop());
   }
@@ -162,7 +365,7 @@ async function fetchBookViaMCP(id) {
   ].join("\n") + "\n";
   let r;
   try {
-    r = await dalibre.exec("zlib", ["mcp", "--read-only"], { env: env(), stdin, timeout: 30000 });
+    r = await execZlib(["mcp", "--read-only"], { stdin, timeout: 30000 });
   } catch {
     return null;
   }
