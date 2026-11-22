@@ -36,15 +36,76 @@ const EXIT_NETWORK = 4;
 
 const DOMAIN_STATE_PATH = "/data/domain.json";
 
-/** @type {{ configuredDomain: string, activeDomain: string } | null} */
+// Thresholds and intervals for domain probing and selection.
+const SLOW_REQUEST_THRESHOLD_MS = 8000;
+const INITIAL_REQUEST_TIMEOUT_MS = 15000;
+const STAGE1_PROBE_TIMEOUT_MS = 3500;
+const STAGE1_EARLY_CUTOFF_MS = 2000;
+const STAGE2_PROBE_TIMEOUT_MS = 3000;
+const MAX_ACCEPTABLE_USER_RTT_MS = 3000;
+const USER_DOMAIN_RTT_RATIO = 2.0;
+const USER_DOMAIN_RTT_GRACE_MS = 250;
+const SWITCH_IMPROVEMENT_RATIO = 0.75;
+const SWITCH_IMPROVEMENT_MIN_MS = 150;
+const BASE_SLOW_COOLDOWN_MS = 5 * 60 * 1000;
+const MAX_SLOW_COOLDOWN_MS = 60 * 60 * 1000;
+const RECENT_PROBE_FAILOVER_WINDOW_MS = 60 * 1000;
+
+/** Built-in Z-Library mirror origins from heartleo/zlib. */
+const BUILTIN_DOMAINS = [
+  "https://1lib.sk",
+  "https://article.sk",
+  "https://articles.sk",
+  "https://z-lib.by",
+  "https://z-lib.fm",
+  "https://z-lib.gd",
+  "https://z-lib.gl",
+  "https://z-lib.sk",
+  "https://z-library.ec",
+  "https://z-library.im",
+  "https://z-library.qa",
+  "https://z-library.sk",
+  "https://z-library.website",
+  "https://zlib.bz",
+];
+
+/**
+ * @typedef {Object} DomainState
+ * @property {string} configuredDomain
+ * @property {string} envDomain
+ * @property {string} activeDomain
+ * @property {string[]} backupDomains
+ * @property {string[]} knownDomains
+ * @property {number} lastProbeAt
+ * @property {number} noBetterCount
+ */
+
+/**
+ * @typedef {Object} DomainProbeStats
+ * @property {string} origin
+ * @property {number} successes
+ * @property {number} attempts
+ * @property {number} avgRtt
+ * @property {number} maxRtt
+ */
+
+/** @type {DomainState | null} */
 let cachedDomainState = null;
 
-/** @type {Promise<string[]> | null} */
-let doctorPromise = null;
+/** @type {Promise<string | null> | null} */
+let activeEvaluationPromise = null;
+
+/**
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * Normalizes a domain or URL to an origin ("https://host"), or "" when empty.
- * @param {string | undefined} raw
+ * @param {string | undefined | null} raw
  * @returns {string}
  */
 function normalizeOrigin(raw) {
@@ -59,12 +120,42 @@ function normalizeOrigin(raw) {
 }
 
 /**
- * Returns the domain currently in use: the auto-discovered healthy domain from
- * /data/domain.json (unless the user changed the Domain setting since then),
- * or the Domain setting itself.
- * @returns {Promise<string>}
+ * @param {unknown} list
+ * @returns {string[]}
  */
-async function getActiveDomain() {
+function normalizeOriginList(list) {
+  if (!Array.isArray(list)) return [];
+  /** @type {string[]} */
+  const out = [];
+  for (const item of list) {
+    const origin = normalizeOrigin(typeof item === "string" ? item : "");
+    if (origin.startsWith("https://") && !out.includes(origin)) {
+      out.push(origin);
+    }
+  }
+  return out;
+}
+
+/**
+ * Extracts the lowercase hostname from an origin or URL string.
+ * @param {string} raw
+ * @returns {string}
+ */
+function extractHost(raw) {
+  if (!raw) return "";
+  try {
+    return new URL(raw.includes("://") ? raw : `https://${raw}`).hostname.toLowerCase();
+  } catch {
+    return raw.toLowerCase();
+  }
+}
+
+/**
+ * Loads and synchronizes the persistent domain state from /data/domain.json.
+ * Resets automatic selection if the user changed dalibre.settings.domain.
+ * @returns {Promise<DomainState>}
+ */
+async function loadDomainState() {
   const configured = normalizeOrigin(dalibre.settings.domain);
   if (!cachedDomainState) {
     try {
@@ -72,40 +163,63 @@ async function getActiveDomain() {
       const parsed = JSON.parse(raw);
       cachedDomainState = {
         configuredDomain: normalizeOrigin(parsed?.configuredDomain),
+        envDomain: normalizeOrigin(parsed?.envDomain),
         activeDomain: normalizeOrigin(parsed?.activeDomain),
+        backupDomains: normalizeOriginList(parsed?.backupDomains),
+        knownDomains: normalizeOriginList(parsed?.knownDomains),
+        lastProbeAt: Number(parsed?.lastProbeAt) || 0,
+        noBetterCount: Number(parsed?.noBetterCount) || 0,
       };
     } catch {
-      cachedDomainState = { configuredDomain: configured, activeDomain: "" };
+      cachedDomainState = {
+        configuredDomain: configured,
+        envDomain: "",
+        activeDomain: "",
+        backupDomains: [],
+        knownDomains: [],
+        lastProbeAt: 0,
+        noBetterCount: 0,
+      };
     }
   }
   if (cachedDomainState.configuredDomain !== configured) {
-    cachedDomainState = { configuredDomain: configured, activeDomain: "" };
-    try {
-      await writeFile(DOMAIN_STATE_PATH, JSON.stringify(cachedDomainState));
-    } catch {
-      // ignore persistence errors
-    }
+    cachedDomainState = {
+      ...cachedDomainState,
+      configuredDomain: configured,
+      activeDomain: "",
+      backupDomains: [],
+      lastProbeAt: 0,
+      noBetterCount: 0,
+    };
+    await saveDomainState(cachedDomainState);
   }
-  return cachedDomainState.activeDomain || configured;
+  return cachedDomainState;
 }
 
 /**
- * Persists a newly discovered healthy domain to memory and /data/domain.json.
- * @param {string} domain
+ * Persists the domain state to memory and /data/domain.json.
+ * @param {DomainState} state
  */
-async function saveActiveDomain(domain) {
-  const configured = normalizeOrigin(dalibre.settings.domain);
-  const active = normalizeOrigin(domain);
-  cachedDomainState = { configuredDomain: configured, activeDomain: active };
+async function saveDomainState(state) {
+  cachedDomainState = state;
   try {
-    await writeFile(DOMAIN_STATE_PATH, JSON.stringify(cachedDomainState));
+    await writeFile(DOMAIN_STATE_PATH, JSON.stringify(state));
   } catch {
     // ignore persistence errors
   }
 }
 
 /**
- * The environment zlib runs with: the active or configured mirror.
+ * Returns the domain currently in use.
+ * @returns {Promise<string>}
+ */
+async function getActiveDomain() {
+  const state = await loadDomainState();
+  return state.activeDomain || state.configuredDomain || state.envDomain;
+}
+
+/**
+ * The environment zlib runs with: the active or overridden mirror.
  * @param {string} [domainOverride]
  * @returns {Promise<Record<string, string>>}
  */
@@ -130,13 +244,8 @@ function isDomainFailure(r) {
 function extractFailedHosts(domainUsed, output = "") {
   /** @type {Set<string>} */
   const hosts = new Set();
-  if (domainUsed) {
-    try {
-      hosts.add(new URL(domainUsed).hostname.toLowerCase());
-    } catch {
-      hosts.add(domainUsed.toLowerCase());
-    }
-  }
+  const usedHost = extractHost(domainUsed);
+  if (usedHost) hosts.add(usedHost);
   for (const m of output.matchAll(/\(([a-z0-9-]+(?:\.[a-z0-9-]+)+)\)/gi)) {
     hosts.add(m[1].toLowerCase());
   }
@@ -144,72 +253,469 @@ function extractFailedHosts(domainUsed, output = "") {
 }
 
 /**
- * Runs `zlib doctor --json` to find a healthy mirror, saves it as the new
- * active domain in /data/domain.json, and returns it.
- * @param {Set<string>} failedHosts
- * @param {string} previousDomain
- * @returns {Promise<string | null>}
+ * Collects the user's .env / session domain and custom trusted mirrors from
+ * the local zlib configuration files (no network calls), and merges all known
+ * candidate domains.
+ * @param {DomainState} state
+ * @returns {Promise<{ userPreferredDomain: string, candidates: string[] }>}
  */
-async function switchToHealthyDomain(failedHosts, previousDomain) {
-  const current = await getActiveDomain();
-  if (current && current !== previousDomain) {
+async function collectCandidatesAndConfig(state) {
+  const [cfgRes, mirrorsRes] = await Promise.all([
+    dalibre.exec("zlib", ["config", "network", "domain", "--json"], { timeout: 3000 }).catch(() => null),
+    dalibre.exec("zlib", ["mirrors", "list", "--json"], { timeout: 3000 }).catch(() => null),
+  ]);
+
+  let envDomain = state.envDomain;
+  if (cfgRes && cfgRes.code === 0) {
     try {
-      if (!failedHosts.has(new URL(current).hostname.toLowerCase())) return current;
+      const parsed = JSON.parse(cfgRes.stdout || "[]");
+      const entry = Array.isArray(parsed)
+        ? parsed.find((/** @type {any} */ item) => item?.key === "ZLIB_DOMAIN")
+        : null;
+      if (entry) {
+        const saved = normalizeOrigin(entry.saved);
+        const val = entry.source && entry.source !== "Default" ? normalizeOrigin(entry.value) : "";
+        envDomain = saved || val;
+      }
     } catch {
-      // continue to probe
+      // keep previous envDomain
     }
   }
 
-  if (!doctorPromise) {
-    doctorPromise = (async () => {
-      try {
-        const r = await dalibre.exec("zlib", ["doctor", "--json"], { timeout: 20000 });
-        const list = JSON.parse(r.stdout || "[]");
-        if (!Array.isArray(list)) return [];
-        /** @type {string[]} */
-        const origins = [];
-        for (const item of list) {
-          if (item?.status && item.status !== "healthy") continue;
-          const candidate = normalizeOrigin(item?.final_url || item?.domain);
-          if (candidate.startsWith("https://") && !origins.includes(candidate)) {
-            origins.push(candidate);
-          }
-        }
-        return origins;
-      } catch {
-        return [];
-      } finally {
-        doctorPromise = null;
-      }
-    })();
+  if (envDomain !== state.envDomain) {
+    state.envDomain = envDomain;
+    state.noBetterCount = 0;
   }
 
-  const origins = await doctorPromise;
-  if (origins.length === 0) return null;
+  /** @type {string[]} */
+  let userMirrors = [];
+  if (mirrorsRes && mirrorsRes.code === 0) {
+    try {
+      userMirrors = normalizeOriginList(JSON.parse(mirrorsRes.stdout || "[]"));
+    } catch {
+      userMirrors = [];
+    }
+  }
 
-  const chosen =
-    origins.find((origin) => {
-      try {
-        return !failedHosts.has(new URL(origin).hostname.toLowerCase());
-      } catch {
-        return true;
-      }
-    }) || origins[0];
+  const configured = normalizeOrigin(dalibre.settings.domain);
+  const userPreferredDomain = configured || envDomain;
 
-  await saveActiveDomain(chosen);
-  return chosen;
+  /** @type {string[]} */
+  const candidates = [];
+  /** @param {string} raw */
+  const addCandidate = (raw) => {
+    const origin = normalizeOrigin(raw);
+    if (origin.startsWith("https://") && !candidates.includes(origin)) {
+      candidates.push(origin);
+    }
+  };
+
+  addCandidate(userPreferredDomain);
+  addCandidate(state.activeDomain);
+  for (const m of userMirrors) addCandidate(m);
+  for (const b of state.backupDomains) addCandidate(b);
+  for (const d of BUILTIN_DOMAINS) addCandidate(d);
+  for (const k of state.knownDomains) addCandidate(k);
+
+  return { userPreferredDomain, candidates };
 }
 
 /**
- * Runs zlib with automatic domain failover on network or timeout errors.
+ * Probes a single domain once via `zlib profile --json` and measures end-to-end
+ * EAPI latency.
+ * @param {string} origin
+ * @param {number} timeoutMs
+ * @returns {Promise<{ origin: string, ok: boolean, rtt: number, notLoggedIn: boolean }>}
+ */
+async function probeDomainOnce(origin, timeoutMs) {
+  const start = Date.now();
+  try {
+    const r = await dalibre.exec("zlib", ["profile", "--json"], {
+      env: { ZLIB_DOMAIN: origin },
+      timeout: timeoutMs,
+    });
+    const rtt = Math.max(1, Date.now() - start);
+    if (r.code === 0) {
+      try {
+        const parsed = JSON.parse(r.stdout || "{}");
+        if (parsed && typeof parsed === "object") {
+          return { origin, ok: true, rtt, notLoggedIn: false };
+        }
+      } catch {
+        // non-JSON response
+      }
+      return { origin, ok: false, rtt, notLoggedIn: false };
+    }
+    if (r.code === EXIT_AUTH) {
+      const out = `${r.stderr || ""}\n${r.stdout || ""}`;
+      if (/not logged in\. Run `zlib login` first/i.test(out)) {
+        return { origin, ok: false, rtt, notLoggedIn: true };
+      }
+      if (/session expired or was revoked/i.test(out)) {
+        // The mirror's EAPI answered properly with a JSON auth status.
+        return { origin, ok: true, rtt, notLoggedIn: false };
+      }
+    }
+    return { origin, ok: false, rtt, notLoggedIn: false };
+  } catch {
+    return { origin, ok: false, rtt: Math.max(1, Date.now() - start), notLoggedIn: false };
+  }
+}
+
+/**
+ * Fallback discovery via `zlib doctor --json` when no session exists yet or
+ * when all known candidates fail Stage 1. Also records any newly discovered
+ * built-in domains into state.knownDomains.
+ * @param {DomainState} state
+ * @param {Set<string>} failedHosts
+ * @returns {Promise<string[]>}
+ */
+async function discoverHealthyViaDoctor(state, failedHosts) {
+  try {
+    const r = await dalibre.exec("zlib", ["doctor", "--json"], { timeout: 15000 });
+    const list = JSON.parse(r.stdout || "[]");
+    if (!Array.isArray(list)) return [];
+    /** @type {string[]} */
+    const healthy = [];
+    for (const item of list) {
+      const rawDomain = normalizeOrigin(item?.domain);
+      const finalOrigin = normalizeOrigin(item?.final_url || item?.domain);
+      for (const d of [rawDomain, finalOrigin]) {
+        if (d.startsWith("https://") && !BUILTIN_DOMAINS.includes(d) && !state.knownDomains.includes(d)) {
+          state.knownDomains.push(d);
+        }
+      }
+      if (item?.status && item.status !== "healthy") continue;
+      if (finalOrigin.startsWith("https://") && !failedHosts.has(extractHost(finalOrigin)) && !healthy.includes(finalOrigin)) {
+        healthy.push(finalOrigin);
+      }
+    }
+    return healthy;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Pure decision function that picks the winning domain and backup list from
+ * 3-round probe statistics according to user preference (2x threshold) and
+ * active domain hysteresis (25% / 150ms threshold).
+ * @param {Object} params
+ * @param {DomainProbeStats[]} params.statsList
+ * @param {string} params.userPreferredDomain
+ * @param {string} params.currentActiveDomain
+ * @returns {{ chosen: string | null, fastest: DomainProbeStats | null, backups: string[] }}
+ */
+function selectBestDomain({ statsList, userPreferredDomain, currentActiveDomain }) {
+  const viable = statsList.filter((s) => s.successes > 0);
+  if (viable.length === 0) {
+    return { chosen: null, fastest: null, backups: [] };
+  }
+
+  const ranked = [...viable].sort((a, b) => {
+    if (b.successes !== a.successes) return b.successes - a.successes;
+    if (a.avgRtt !== b.avgRtt) return a.avgRtt - b.avgRtt;
+    return a.maxRtt - b.maxRtt;
+  });
+
+  const fastest = ranked[0];
+  const maxSuccesses = fastest.successes;
+
+  /** @type {string | null} */
+  let chosen = null;
+
+  // Rule A: User-configured domain (.env or plugin setting) takes priority if
+  // packet-loss-free and within 2x of the fastest domain's latency.
+  if (userPreferredDomain) {
+    const userStats = viable.find((s) => s.origin === userPreferredDomain);
+    if (
+      userStats &&
+      userStats.successes === maxSuccesses &&
+      userStats.avgRtt <= MAX_ACCEPTABLE_USER_RTT_MS &&
+      userStats.avgRtt <= Math.max(USER_DOMAIN_RTT_RATIO * fastest.avgRtt, fastest.avgRtt + USER_DOMAIN_RTT_GRACE_MS)
+    ) {
+      chosen = userStats.origin;
+    }
+  }
+
+  // Rule B: If automatic selection is used, keep the current activeDomain
+  // unless it had packet loss or fastest is >25% (and >=150ms) faster.
+  if (!chosen && currentActiveDomain) {
+    const activeStats = viable.find((s) => s.origin === currentActiveDomain);
+    if (activeStats && activeStats.successes === maxSuccesses && activeStats.avgRtt <= MAX_ACCEPTABLE_USER_RTT_MS) {
+      const clearlyFaster =
+        fastest.origin !== activeStats.origin &&
+        fastest.avgRtt <= SWITCH_IMPROVEMENT_RATIO * activeStats.avgRtt &&
+        activeStats.avgRtt - fastest.avgRtt >= SWITCH_IMPROVEMENT_MIN_MS;
+      if (!clearlyFaster) {
+        chosen = activeStats.origin;
+      }
+    }
+  }
+
+  if (!chosen) {
+    chosen = fastest.origin;
+  }
+
+  const backups = ranked
+    .filter((s) => s.origin !== chosen && s.successes === maxSuccesses)
+    .slice(0, 3)
+    .map((s) => s.origin);
+
+  return { chosen, fastest, backups };
+}
+
+/**
+ * Runs the two-stage 3-round probing and domain selection algorithm.
+ * @param {Object} [options]
+ * @param {Set<string>} [options.failedHosts]
+ * @param {"startup" | "slow" | "failure"} [options.reason]
+ * @returns {Promise<string | null>}
+ */
+async function evaluateAndSelectDomain(options = {}) {
+  const failedHosts = options.failedHosts || new Set();
+  const reason = options.reason || "startup";
+
+  if (activeEvaluationPromise) {
+    const shared = await activeEvaluationPromise;
+    if (shared && !failedHosts.has(extractHost(shared))) return shared;
+  }
+
+  const runPromise = (async () => {
+    const state = await loadDomainState();
+    const previousActive = state.activeDomain || state.configuredDomain || state.envDomain;
+    const { userPreferredDomain, candidates } = await collectCandidatesAndConfig(state);
+    const pool = candidates.filter((origin) => !failedHosts.has(extractHost(origin)));
+
+    if (pool.length === 0) return null;
+
+    // Stage 1: Concurrent initial screening (1 round) with early cutoff.
+    /** @type {Map<string, { origin: string, ok: boolean, rtt: number, notLoggedIn: boolean }>} */
+    const stage1Map = new Map();
+    let sawNotLoggedIn = false;
+
+    const mustWaitOrigins = [userPreferredDomain, state.activeDomain].filter(
+      (d) => d && pool.includes(d)
+    );
+
+    await new Promise((resolveStage1) => {
+      let settledCount = 0;
+      let resolved = false;
+      const stage1Start = Date.now();
+
+      const finish = () => {
+        if (!resolved) {
+          resolved = true;
+          resolveStage1(undefined);
+        }
+      };
+
+      const checkEarlyCutoff = () => {
+        if (resolved) return;
+        if (sawNotLoggedIn) {
+          finish();
+          return;
+        }
+        let healthyCount = 0;
+        for (const res of stage1Map.values()) {
+          if (res.ok) healthyCount++;
+        }
+        const mustWaitDone = mustWaitOrigins.every((d) => stage1Map.has(d));
+        const elapsed = Date.now() - stage1Start;
+        if (healthyCount >= 3 && (mustWaitDone || elapsed >= STAGE1_EARLY_CUTOFF_MS)) {
+          finish();
+        }
+      };
+
+      const cutoffTimer = setTimeout(checkEarlyCutoff, STAGE1_EARLY_CUTOFF_MS);
+      const maxTimer = setTimeout(finish, STAGE1_PROBE_TIMEOUT_MS + 100);
+
+      for (const origin of pool) {
+        probeDomainOnce(origin, STAGE1_PROBE_TIMEOUT_MS).then((res) => {
+          stage1Map.set(origin, res);
+          if (res.notLoggedIn) sawNotLoggedIn = true;
+          settledCount++;
+          checkEarlyCutoff();
+          if (settledCount >= pool.length) {
+            clearTimeout(cutoffTimer);
+            clearTimeout(maxTimer);
+            finish();
+          }
+        });
+      }
+    });
+
+    // If the user has no session.json yet, fall back to `zlib doctor --json`
+    // so `check()` can sign in on a reachable domain first.
+    if (sawNotLoggedIn) {
+      const healthy = await discoverHealthyViaDoctor(state, failedHosts);
+      if (healthy.length === 0) return null;
+      const chosen =
+        (userPreferredDomain && healthy.includes(userPreferredDomain) ? userPreferredDomain : "") ||
+        (state.activeDomain && healthy.includes(state.activeDomain) ? state.activeDomain : "") ||
+        healthy[0];
+      state.activeDomain = chosen;
+      state.backupDomains = healthy.filter((d) => d !== chosen).slice(0, 3);
+      state.lastProbeAt = Date.now();
+      await saveDomainState(state);
+      return chosen;
+    }
+
+    const stage1Healthy = [...stage1Map.values()]
+      .filter((r) => r.ok)
+      .sort((a, b) => a.rtt - b.rtt);
+
+    if (stage1Healthy.length === 0) {
+      const doctorHealthy = await discoverHealthyViaDoctor(state, failedHosts);
+      if (doctorHealthy.length === 0) return null;
+      const chosen = doctorHealthy[0];
+      state.activeDomain = chosen;
+      state.backupDomains = doctorHealthy.slice(1, 4);
+      state.lastProbeAt = Date.now();
+      await saveDomainState(state);
+      return chosen;
+    }
+
+    // Select finalists for Stage 2: Top 3 fastest + userPreferredDomain + activeDomain.
+    /** @type {string[]} */
+    const finalists = [];
+    for (const item of stage1Healthy.slice(0, 3)) {
+      if (!finalists.includes(item.origin)) finalists.push(item.origin);
+    }
+    for (const special of [userPreferredDomain, state.activeDomain]) {
+      if (special && stage1Map.get(special)?.ok && !finalists.includes(special)) {
+        finalists.push(special);
+      }
+    }
+
+    // Stage 2: 2 additional rounds on finalists (total 3 samples per finalist).
+    const round2Results = await Promise.all(
+      finalists.map((origin) => probeDomainOnce(origin, STAGE2_PROBE_TIMEOUT_MS))
+    );
+    const round3Results = await Promise.all(
+      finalists.map((origin) => probeDomainOnce(origin, STAGE2_PROBE_TIMEOUT_MS))
+    );
+
+    /** @type {DomainProbeStats[]} */
+    const statsList = finalists.map((origin, idx) => {
+      const samples = [stage1Map.get(origin), round2Results[idx], round3Results[idx]].filter(Boolean);
+      const okSamples = samples.filter((s) => s && s.ok);
+      const successes = okSamples.length;
+      const totalRtt = okSamples.reduce((acc, s) => acc + (s ? s.rtt : 0), 0);
+      const maxRtt = okSamples.reduce((max, s) => Math.max(max, s ? s.rtt : 0), 0);
+      return {
+        origin,
+        successes,
+        attempts: samples.length,
+        avgRtt: successes > 0 ? Math.round(totalRtt / successes) : Infinity,
+        maxRtt: successes > 0 ? maxRtt : Infinity,
+      };
+    });
+
+    const { chosen, fastest, backups } = selectBestDomain({
+      statsList,
+      userPreferredDomain,
+      currentActiveDomain: state.activeDomain,
+    });
+
+    if (!chosen) return null;
+
+    state.activeDomain = chosen;
+    state.backupDomains = backups;
+    state.lastProbeAt = Date.now();
+
+    if (reason === "startup") {
+      state.noBetterCount = 0;
+    } else if (reason === "slow") {
+      const switchedToFaster =
+        chosen !== previousActive && fastest !== null && fastest.avgRtt < MAX_ACCEPTABLE_USER_RTT_MS;
+      state.noBetterCount = switchedToFaster ? 0 : Math.min((state.noBetterCount || 0) + 1, 4);
+    } else if (reason === "failure" && chosen !== previousActive) {
+      state.noBetterCount = 0;
+    }
+
+    await saveDomainState(state);
+    return chosen;
+  })();
+
+  activeEvaluationPromise = runPromise;
+  try {
+    return await runPromise;
+  } finally {
+    if (activeEvaluationPromise === runPromise) {
+      activeEvaluationPromise = null;
+    }
+  }
+}
+
+/**
+ * Checks whether a slow-request (>8s) background probe is allowed under the
+ * exponential backoff cooldown (5m -> 10m -> 20m -> 40m -> 60m).
+ * @param {DomainState} state
+ * @returns {boolean}
+ */
+function canTriggerSlowProbe(state) {
+  if (!state.lastProbeAt) return true;
+  const factor = 2 ** Math.min(Math.max(state.noBetterCount || 0, 0), 4);
+  const cooldownMs = Math.min(BASE_SLOW_COOLDOWN_MS * factor, MAX_SLOW_COOLDOWN_MS);
+  return Date.now() - state.lastProbeAt >= cooldownMs;
+}
+
+/**
+ * Picks a replacement domain when a request times out or fails with EXIT_NETWORK.
+ * Uses cached backupDomains immediately if a probe ran within the last 60s,
+ * otherwise runs a fresh two-stage evaluation.
+ * @param {Set<string>} failedHosts
+ * @param {Promise<string | null> | null} hedgedProbePromise
+ * @returns {Promise<string | null>}
+ */
+async function resolveFailoverDomain(failedHosts, hedgedProbePromise) {
+  if (hedgedProbePromise) {
+    const hedged = await hedgedProbePromise;
+    if (hedged && !failedHosts.has(extractHost(hedged))) {
+      return hedged;
+    }
+  }
+
+  const state = await loadDomainState();
+  const recentProbe = state.lastProbeAt > 0 && Date.now() - state.lastProbeAt < RECENT_PROBE_FAILOVER_WINDOW_MS;
+  if (recentProbe && state.backupDomains.length > 0) {
+    const backup = state.backupDomains.find((d) => !failedHosts.has(extractHost(d)));
+    if (backup) {
+      state.activeDomain = backup;
+      state.backupDomains = state.backupDomains.filter((d) => d !== backup);
+      await saveDomainState(state);
+      return backup;
+    }
+  }
+
+  return evaluateAndSelectDomain({ failedHosts, reason: "failure" });
+}
+
+/**
+ * Runs zlib with 8s hedged slow-domain probing, exponential backoff cooldown,
+ * and automatic 15s failover retry on network or timeout errors.
  * @param {string[]} args
  * @param {Dalibre.ExecOptions} [options]
  * @returns {Promise<Dalibre.ExecResult>}
  */
 async function execZlib(args, options = {}) {
   const totalTimeout = options.timeout ?? 60000;
-  const initialTimeout = totalTimeout <= 60000 ? Math.min(totalTimeout, 15000) : totalTimeout;
-  const domainUsed = await getActiveDomain();
+  const isMetadataCall = totalTimeout <= 60000;
+  const initialTimeout = isMetadataCall ? Math.min(totalTimeout, INITIAL_REQUEST_TIMEOUT_MS) : totalTimeout;
+  const state = await loadDomainState();
+  const domainUsed = state.activeDomain || state.configuredDomain || state.envDomain;
+
+  /** @type {Promise<string | null> | null} */
+  let hedgedProbePromise = null;
+  /** @type { ReturnType<typeof setTimeout> | null } */
+  let slowTimer = null;
+
+  if (isMetadataCall && initialTimeout > SLOW_REQUEST_THRESHOLD_MS && canTriggerSlowProbe(state)) {
+    slowTimer = setTimeout(() => {
+      hedgedProbePromise = evaluateAndSelectDomain({ reason: "slow" }).catch(() => null);
+    }, SLOW_REQUEST_THRESHOLD_MS);
+  }
 
   /** @type {Dalibre.ExecResult | null} */
   let firstResult = null;
@@ -224,15 +730,22 @@ async function execZlib(args, options = {}) {
     });
   } catch (err) {
     firstError = err;
+  } finally {
+    if (slowTimer) clearTimeout(slowTimer);
   }
 
   if (firstResult && !isDomainFailure(firstResult)) {
+    if (hedgedProbePromise) {
+      // Allow an already-running hedged probe a brief window to persist its result
+      // before Dalibre's invoke() cancels the call context on return.
+      await Promise.race([hedgedProbePromise, sleep(2500)]);
+    }
     return firstResult;
   }
 
   const output = firstResult ? `${firstResult.stderr || ""}\n${firstResult.stdout || ""}` : "";
   const failedHosts = extractFailedHosts(domainUsed, output);
-  const newDomain = await switchToHealthyDomain(failedHosts, domainUsed);
+  const newDomain = await resolveFailoverDomain(failedHosts, hedgedProbePromise);
 
   if (!newDomain) {
     if (firstError) throw firstError;
@@ -275,10 +788,11 @@ function failure(r) {
 }
 
 /**
- * Called when the plugin loads: signs in with the settings' account when
- * zlib isn't signed in yet.
+ * Called when the plugin loads: evaluates candidate mirrors to pick the
+ * optimal domain, then verifies or completes Z-Library sign-in.
  */
 export async function check() {
+  await evaluateAndSelectDomain({ reason: "startup" });
   const profile = await execZlib(["profile", "--json"]);
   if (profile.code === 0) return;
   if (profile.code !== EXIT_AUTH) throw failure(profile);
@@ -291,6 +805,9 @@ export async function check() {
   if (login.code !== 0) {
     throw dalibre.error("auth", "Z-Library refused the sign-in: " + (login.stderr || login.stdout).trim().split("\n").pop());
   }
+  // Once a fresh session.json is created, run the 3-round evaluation so the
+  // fastest packet-loss-free domain is selected.
+  await evaluateAndSelectDomain({ reason: "startup" });
 }
 
 /** @returns {Dalibre.Collection[]} */
